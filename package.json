@@ -1,7 +1,7 @@
 {
   "name": "sequential",
   "version": "1.0.0",
-  "description": "Pause/resume executor for edge functions - save to DB, exit, resume on HTTP callback",
+  "description": "Pause/resume code execution for edge functions",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -11,6 +11,6 @@
   "engines": {"node": ">=18.0.0"},
   "scripts": {"dev": "node --watch example.js"},
   "dependencies": {
-    "nanoid": "^5.0.0"
+    "sequential-fetch": "^1.0.0"
   }
 }

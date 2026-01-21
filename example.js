@@ -1,83 +1,33 @@
-import { createFlowExecutor } from './src/index.js';
+import { SequentialFlow } from './src/index.js';
 
-// Storage with separate result handling (simulates DB)
-const state = new Map();
-const results = new Map();
-
-const storage = {
-  get: (id) => Promise.resolve(state.get(id)),
-  set: (id, data) => { state.set(id, data); return Promise.resolve(); },
-  delete: (id) => {
-    // Clean up all results for this execution
-    for (const key of results.keys()) {
-      if (key.startsWith(`${id}:`)) results.delete(key);
-    }
-    state.delete(id);
-    return Promise.resolve();
-  },
-  getResult: (id, step) => Promise.resolve(results.get(`${id}:${step}`)),
-  setResult: (id, step, data) => {
-    results.set(`${id}:${step}`, data);
-    return Promise.resolve();
-  }
-};
-
-const flow = createFlowExecutor(storage);
-
-// Workflow with multiple tool calls
-function* workflow(input) {
-  const user = yield { __tool: ['api', 'user', { id: input.userId }] };
-  const posts = yield { __tool: ['api', 'posts', { uid: user.id }] };
-  const comments = yield { __tool: ['api', 'comments', { postIds: posts.map(p => p.id) }] };
-
-  return {
-    user,
-    postsCount: posts.length,
-    commentsCount: comments.length
-  };
-}
-
-// Mock tool - in real use this would be HTTP calls
-globalThis.__call = async (cat, n, i) => {
-  const mocks = {
-    user: { id: 1, name: 'Alice' },
-    posts: [{ id: 101 }, { id: 102 }],
-    comments: [{ id: 1001 }, { id: 1002 }, { id: 1003 }]
-  };
-  console.log(`  [tool] ${cat}/${n}`, JSON.stringify(i));
-  return mocks[n];
-};
-
-// Resume hook - in real use this fires HTTP to /resume/:id
-globalThis.__resume = async (id) => {
-  console.log(`  [resume] → would HTTP POST /resume/${id}`);
-};
+// Code uses semicolons to separate statements
+// Final expression becomes the result (use array for multiple values)
+const code = 'const user = await fetch("https://api.example.com/user/1"); const posts = await fetch("https://api.example.com/posts?uid=" + user.id); [user, posts]';
 
 (async () => {
-  const id = 'exec-001';
-
-  // Simulate edge function invocations
-  console.log('=== Invocation 1: First tool call ===');
-  let r = await flow.execute(workflow, id, { userId: 1 });
-  console.log('  Result:', r);
-  console.log('  DB state:', state.get(id));
-  console.log('  Cached results:', [...results.entries()]);
+  // First execution - pauses on first fetch
+  console.log('=== Execute ===');
+  let task = await SequentialFlow.execute({ code, id: 'task-1' });
+  console.log('Status:', task.status);
+  console.log('Fetch URL:', task.fetchRequest?.url);
   console.log();
 
-  console.log('=== Invocation 2: Second tool call ===');
-  r = await flow.execute(workflow, id, { userId: 1 });
-  console.log('  Result:', r);
-  console.log('  DB state:', state.get(id));
+  // Resume with first response
+  console.log('=== Resume 1 ===');
+  task = await SequentialFlow.resume({
+    taskId: 'task-1',
+    fetchResponse: { id: 1, name: 'Alice' }
+  });
+  console.log('Status:', task.status);
+  console.log('Fetch URL:', task.fetchRequest?.url);
   console.log();
 
-  console.log('=== Invocation 3: Third tool call ===');
-  r = await flow.execute(workflow, id, { userId: 1 });
-  console.log('  Result:', r);
-  console.log('  DB state:', state.get(id));
-  console.log();
-
-  console.log('=== Invocation 4: Completion ===');
-  r = await flow.execute(workflow, id, { userId: 1 });
-  console.log('  Final result:', r);
-  console.log('  DB cleaned:', !state.has(id) && results.size === 0);
+  // Resume with second response
+  console.log('=== Resume 2 ===');
+  task = await SequentialFlow.resume({
+    taskId: 'task-1',
+    fetchResponse: [{ id: 101, title: 'Post 1' }, { id: 102, title: 'Post 2' }]
+  });
+  console.log('Status:', task.status);
+  console.log('Result:', JSON.stringify(task.result, null, 2));
 })();

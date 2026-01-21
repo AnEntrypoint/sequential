@@ -1,88 +1,119 @@
 # Sequential
 
-Pause/resume executor for edge functions.
+Pause/resume code execution for edge functions. Uses `sequential-fetch` VM.
 
 ## How It Works
 
 ```
-Edge Function 1          Edge Function 2          Edge Function N
-───────────────          ───────────────          ───────────────
-run generator            load state from DB       load state from DB
-hit tool call            replay cached results    replay cached results
-save result to DB        hit next tool call       generator completes
-save step to DB          save result to DB        clean up DB
-fire HTTP /resume        save step to DB          return final result
-exit                     fire HTTP /resume
-                         exit
+Edge Function 1              Edge Function 2              Edge Function N
+───────────────              ───────────────              ───────────────
+execute code                 load VM state from DB        load VM state from DB
+VM hits fetch()              resume execution             resume execution
+save VM state to DB          VM hits next fetch()         code completes
+return paused + fetchRequest save VM state to DB          clean up DB
+exit                         return paused + fetchRequest return result
+                             exit
 ```
 
-Each edge function invocation:
-1. Loads saved step from DB
-2. Creates generator, replays cached results up to saved step
-3. Executes next tool call
-4. Saves result and increments step
-5. Fires HTTP callback (non-blocking)
-6. Exits
+Code runs in a VM. When code calls `fetch()`, the VM pauses and returns the fetch request details. The VM state is saved to storage. On resume, the VM state is restored and execution continues from where it paused.
 
 ## Usage
 
 ```javascript
-import { createFlowExecutor } from 'sequential';
+import { SequentialFlow } from 'sequential';
 
-const flow = createFlowExecutor(storage);
+// Code uses semicolons to separate statements
+// Final expression becomes the result
+const code = 'const user = await fetch("https://api.example.com/user/1"); const posts = await fetch("https://api.example.com/posts"); [user, posts]';
 
-function* workflow(input) {
-  const user = yield { __tool: ['api', 'user', { id: input.userId }] };
-  const posts = yield { __tool: ['api', 'posts', { uid: user.id }] };
-  return { user, posts };
-}
+// Execute - pauses on first fetch
+let task = await SequentialFlow.execute({ code, id: 'task-1' });
+// task.status === 'paused'
+// task.fetchRequest.url === 'https://api.example.com/user/1'
 
-const result = await flow.execute(workflow, 'exec-id', { userId: 123 });
-// { paused: 'exec-id', step: 0 } after first tool call
-// { user, posts } when generator completes
+// Resume with fetch response
+task = await SequentialFlow.resume({
+  taskId: 'task-1',
+  fetchResponse: { id: 1, name: 'Alice' }
+});
+// task.status === 'paused' (second fetch)
+
+// Resume again
+task = await SequentialFlow.resume({
+  taskId: 'task-1',
+  fetchResponse: [{ id: 101 }, { id: 102 }]
+});
+// task.status === 'completed'
+// task.result === [user, posts]
 ```
+
+## API
+
+### SequentialFlow.execute(request, options?)
+
+```javascript
+await SequentialFlow.execute({
+  code: string,
+  id?: string,
+  name?: string
+}, {
+  storage?: Storage,
+  ttl?: number
+});
+```
+
+Returns:
+```javascript
+{
+  id: string,
+  status: 'paused' | 'completed' | 'error',
+  result?: any,
+  error?: string,
+  fetchRequest?: { url, method, headers, body },
+  vmState: any,
+  pausedState: any
+}
+```
+
+### SequentialFlow.resume(request, options?)
+
+```javascript
+await SequentialFlow.resume({
+  taskId: string,
+  fetchResponse: any
+}, {
+  storage?: Storage
+});
+```
+
+### SequentialFlow.getTask(taskId, options?)
+
+### SequentialFlow.deleteTask(taskId, options?)
 
 ## Storage Interface
 
 ```javascript
 const storage = {
-  get(id) {},           // returns { step: number }
-  set(id, { step }) {}, // saves step
-  delete(id) {},        // cleanup on completion
-
-  getResult(id, step) {},       // returns cached tool result
-  setResult(id, step, data) {}, // saves tool result
-};
-```
-
-## Global Hooks
-
-```javascript
-globalThis.__call = async (category, name, input) => {
-  // Execute tool call (HTTP, DB, etc)
+  async save(task) {},
+  async load(taskId) {},
+  async delete(taskId) {}
 };
 
-globalThis.__resume = async (id) => {
-  // Fire HTTP POST /resume/:id (non-blocking)
-};
+SequentialFlow.defaultStorage = storage;
 ```
 
-## Generator Yields
+## createFlow Helper
 
 ```javascript
-yield { __tool: [category, name, input] }  // tool call - pauses after execution
-yield { __save: true }                     // explicit save point
+import { createFlow } from 'sequential';
+
+const flow = createFlow(myStorage);
+await flow.execute({ code });
+await flow.resume({ taskId, fetchResponse });
 ```
 
-## Error Handling
+## Code Format
 
-Tool errors are captured and returned to the generator:
-
-```javascript
-function* workflow() {
-  const result = yield { __tool: ['api', 'flaky', {}] };
-  if (result.__error) {
-    return { failed: true, reason: result.__error };
-  }
-}
-```
+- Statements separated by semicolons
+- Final expression becomes the result (not `return`)
+- `fetch()` calls pause execution
