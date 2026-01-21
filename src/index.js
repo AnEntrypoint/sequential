@@ -17,11 +17,11 @@ export class ExecutableFlow {
 
     try {
       while (!iter.done) {
-        const { __tool, __save } = iter.value;
+        const { __tool, __save } = iter.value ?? {};
 
         if (__save) {
           await this.#db?.set?.(id, { step: currentStep });
-          globalThis.__resume?.(id).catch(() => {});
+          globalThis.__resume?.(id).catch?.(() => {});
           throw Error('$pause$');
         }
 
@@ -30,41 +30,38 @@ export class ExecutableFlow {
 
           let result;
           if (currentStep < step) {
-            // Resume mode: load result from DB
+            // Resume mode: load cached result from DB
             result = await this.#db?.getResult?.(id, currentStep);
           } else {
-            // Execution mode: call tool and save result
+            // Execution mode: call tool, save result, pause
             try {
               result = await globalThis.__call?.(cat, n, i);
-              await this.#db?.setResult?.(id, currentStep, result);
             } catch (e) {
               result = { __error: e.message };
-              await this.#db?.setResult?.(id, currentStep, result);
             }
+            await this.#db?.setResult?.(id, currentStep, result);
+            await this.#db?.set?.(id, { step: currentStep + 1 });
+            globalThis.__resume?.(id).catch?.(() => {});
+            throw Error('$pause$');
           }
 
           currentStep++;
           iter = gen.next(result);
         } else {
-          throw Error('Invalid yield');
+          throw Error('Invalid yield: must be { __tool } or { __save }');
         }
       }
 
       await this.#db?.delete?.(id);
       return iter.value;
     } catch (e) {
-      if (e.message === '$pause$') return { paused: id, step };
+      if (e.message === '$pause$') return { paused: id, step: currentStep };
       throw e;
     }
   }
 }
 
-globalThis.__call = async (cat, n, i) => {
-  throw Error('__call not configured');
-};
-
-globalThis.__resume = async (id) => {
-  throw Error('__resume not configured');
-};
+globalThis.__call ??= async () => { throw Error('__call not configured'); };
+globalThis.__resume ??= async () => {};
 
 export const createFlowExecutor = (db) => new ExecutableFlow(db);
